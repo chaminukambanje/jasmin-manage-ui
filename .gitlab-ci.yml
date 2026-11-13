@@ -4,9 +4,11 @@
 #   master                      -> test, build, deploy to staging (automatic),
 #                                  then production (manual approval, same image)
 #
-# development and staging run on the CI Docker host; production is deployed to a
-# separate Docker server addressed by PROD_DOCKER_HOST (override it in
-# Settings > CI/CD > Variables, e.g. ssh://deploy@prod.example.org).
+# development and staging run on the CI Docker host; production is deployed over
+# SSH to the Docker server PROD_DOCKER_HOST, published at PROD_URL. The deploy
+# key and host keys are the production-scoped, protected CI/CD variables
+# PROD_SSH_KEY_B64 and PROD_SSH_KNOWN_HOSTS. To rehearse against the local
+# stand-in instead, run a pipeline with PROD_DOCKER_HOST=tcp://prod-docker-server:2375.
 # The UI proxies /api, /admin, /auth and /assets to the jasmin-manage API stack
 # of the same environment.
 
@@ -14,7 +16,8 @@ stages: [test, build, development, staging, production]
 
 variables:
   IMAGE: jasmin-manage-ui:$CI_COMMIT_SHORT_SHA
-  PROD_DOCKER_HOST: tcp://prod-docker-server:2375
+  PROD_DOCKER_HOST: ssh://root@192.168.0.218
+  PROD_URL: http://192.168.0.218:3300
   YARN: node .yarn/releases/yarn-4.5.1.cjs
 
 workflow:
@@ -85,12 +88,19 @@ deploy:production:
   stage: production
   variables:
     UI_PORT: "3300"
-    UI_BIND: 0.0.0.0   # inside the production Docker server; published on the host as 127.0.0.1:3300
+    UI_BIND: 0.0.0.0   # reachable on the server's network
   environment:
     name: production
-    url: http://localhost:3300
+    url: $PROD_URL
   before_script:
     # Ship the exact image that was verified on staging to the production server
+    - |
+      if [ -n "$PROD_SSH_KEY_B64" ]; then
+        apk add --no-cache openssh-client >/dev/null
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        echo "$PROD_SSH_KEY_B64" | base64 -d > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+        echo "$PROD_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      fi
     - docker save "$IMAGE" | docker -H "$PROD_DOCKER_HOST" load
     - export DOCKER_HOST="$PROD_DOCKER_HOST"
   rules:
