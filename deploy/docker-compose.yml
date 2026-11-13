@@ -1,0 +1,22 @@
+# One copy of this stack runs per environment (development / staging / production).
+# Started by .gitlab-ci.yml as:  docker compose -p jasmin-ui-<env> up -d --wait
+services:
+  ui:
+    image: ${UI_IMAGE:?set UI_IMAGE}
+    ports:
+      - "${UI_BIND:-127.0.0.1}:${UI_PORT:?set UI_PORT}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      shared:
+        aliases: [ui]
+    restart: unless-stopped
+
+networks:
+  # Shared with the API stack of the same environment
+  shared:
+    name: jasmin-${DEPLOY_ENV:?set DEPLOY_ENV}
+    external: true

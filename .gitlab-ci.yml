@@ -1,0 +1,98 @@
+# Delivery workflow
+#   any branch / merge request  -> test
+#   devel                       -> test, build, deploy to development (automatic)
+#   master                      -> test, build, deploy to staging (automatic),
+#                                  then production (manual approval, same image)
+#
+# development and staging run on the CI Docker host; production is deployed to a
+# separate Docker server addressed by PROD_DOCKER_HOST (override it in
+# Settings > CI/CD > Variables, e.g. ssh://deploy@prod.example.org).
+# The UI proxies /api, /admin, /auth and /assets to the jasmin-manage API stack
+# of the same environment.
+
+stages: [test, build, development, staging, production]
+
+variables:
+  IMAGE: jasmin-manage-ui:$CI_COMMIT_SHORT_SHA
+  PROD_DOCKER_HOST: tcp://prod-docker-server:2375
+  YARN: node .yarn/releases/yarn-4.5.1.cjs
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+test:
+  stage: test
+  image: node:22-bookworm
+  variables:
+    YARN_CACHE_FOLDER: $CI_PROJECT_DIR/.yarn/cache
+    YARN_ENABLE_GLOBAL_CACHE: "false"
+  cache:
+    key:
+      files: [yarn.lock]
+    paths: [.yarn/cache]
+  script:
+    - $YARN install --immutable
+    - CI=true $YARN test --watchAll=false --passWithNoTests
+
+build:
+  stage: build
+  image: docker:27-cli
+  script:
+    - docker build -t "$IMAGE" .
+  rules:
+    - if: $CI_COMMIT_BRANCH == "devel" || $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+.deploy:
+  image: docker:27-cli
+  variables:
+    UI_IMAGE: $IMAGE
+    DEPLOY_ENV: $CI_ENVIRONMENT_NAME
+  script:
+    - docker network inspect "jasmin-$DEPLOY_ENV" >/dev/null 2>&1 || docker network create "jasmin-$DEPLOY_ENV"
+    - docker compose -p "jasmin-ui-$DEPLOY_ENV" -f deploy/docker-compose.yml up -d --wait --wait-timeout 120
+    # Smoke test from inside the environment's network: the page itself, then the API through the proxy
+    - docker run --rm --network "jasmin-$DEPLOY_ENV" busybox:1.36 wget -qO /dev/null http://ui/
+    - docker run --rm --network "jasmin-$DEPLOY_ENV" busybox:1.36 wget -qO- http://ui/api/
+
+deploy:development:
+  extends: .deploy
+  stage: development
+  variables:
+    UI_PORT: "3100"
+  environment:
+    name: development
+    url: http://localhost:3100
+  rules:
+    - if: $CI_COMMIT_BRANCH == "devel"
+
+deploy:staging:
+  extends: .deploy
+  stage: staging
+  variables:
+    UI_PORT: "3200"
+  environment:
+    name: staging
+    url: http://localhost:3200
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+deploy:production:
+  extends: .deploy
+  stage: production
+  variables:
+    UI_PORT: "3300"
+    UI_BIND: 0.0.0.0   # inside the production Docker server; published on the host as 127.0.0.1:3300
+  environment:
+    name: production
+    url: http://localhost:3300
+  before_script:
+    # Ship the exact image that was verified on staging to the production server
+    - docker save "$IMAGE" | docker -H "$PROD_DOCKER_HOST" load
+    - export DOCKER_HOST="$PROD_DOCKER_HOST"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
