@@ -12,8 +12,8 @@ const Home = () => (
     <Row>
         <Col>
             <Jumbotron>
-                <h1>JASMIN Projects Portal</h1>
-                <p>Welcome to the JASMIN Projects Portal.</p>
+                <h1>JASMIN_ Projects Portal</h1>
+                <p>Welcome_ to the JASMIN Projects Portal.</p>
                 <p>Using this portal, you can request JASMIN resources for your project and track their status.</p>
                 <LinkContainer to="/projects">
                     <Button variant="primary" size="lg">Manage my projects</Button>
